@@ -1,20 +1,181 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const scraper = require('./scraper');
+const connectDB = require('./db');
+const User = require('./models/User');
+const SearchHistory = require('./models/SearchHistory');
+const VehicleModel = require('./models/VehicleModel');
+const VehicleSpec = require('./models/VehicleSpec');
+const VehicleCatalog = require('./models/VehicleCatalog');
+const VehiclePart = require('./models/VehiclePart');
+const { generateToken, authMiddleware, optionalAuth } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Connect to MongoDB
+connectDB();
+
 app.use(cors());
 app.use(express.json());
 
-// API Endpoints
+// ═══════════════════════════════════════════════
+//  AUTH ROUTES
+// ═══════════════════════════════════════════════
+
+// Register
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { username, email, password } = req.body;
+
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: 'All fields are required' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters' });
+        }
+
+        // Check existing
+        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+        if (existingUser) {
+            const field = existingUser.email === email.toLowerCase() ? 'email' : 'username';
+            return res.status(400).json({ error: `This ${field} is already registered` });
+        }
+
+        const user = new User({ username, email, password });
+        await user.save();
+
+        const token = generateToken(user);
+        res.status(201).json({
+            token,
+            user: {
+                id: user.userId,
+                username: user.username,
+                email: user.email,
+                createdAt: user.createdAt
+            }
+        });
+    } catch (error) {
+        console.error('Register error:', error);
+        res.status(500).json({ error: 'Registration failed' });
+    }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password are required' });
+        }
+
+        const user = await User.findOne({ email: email.toLowerCase() });
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        const isMatch = await user.comparePassword(password);
+        if (!isMatch) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        const token = generateToken(user);
+        res.json({
+            token,
+            user: {
+                id: user.userId,
+                username: user.username,
+                email: user.email,
+                createdAt: user.createdAt
+            }
+        });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+// Get current user
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json({
+            id: user.userId,
+            username: user.username,
+            email: user.email,
+            createdAt: user.createdAt
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get user' });
+    }
+});
+
+// Get search history
+app.get('/api/auth/history', authMiddleware, async (req, res) => {
+    try {
+        const history = await SearchHistory.find({ userId: req.user.id })
+            .sort({ searchedAt: -1 })
+            .limit(50);
+        res.json(history);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get history' });
+    }
+});
+
+// ═══════════════════════════════════════════════
+//  IMAGE PROXY
+// ═══════════════════════════════════════════════
+
+app.get('/api/image-proxy', async (req, res) => {
+    const { url } = req.query;
+    if (!url || !url.includes('7zap.com')) {
+        return res.status(400).json({ error: 'Invalid image URL' });
+    }
+    try {
+        const axios = require('axios');
+        const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            timeout: 15000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://opel.7zap.com/',
+                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+            }
+        });
+        const ext = url.split('.').pop().split('?')[0].toLowerCase();
+        const mimeTypes = { webp: 'image/webp', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml' };
+        res.set('Content-Type', mimeTypes[ext] || response.headers['content-type'] || 'image/webp');
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.send(Buffer.from(response.data));
+    } catch (error) {
+        console.error('Image proxy error:', error.message);
+        res.status(502).json({ error: 'Failed to fetch image' });
+    }
+});
+
+// ═══════════════════════════════════════════════
+//  CACHED SCRAPER API ENDPOINTS
+// ═══════════════════════════════════════════════
+
 app.get('/api/models', async (req, res) => {
     try {
-        const models = await scraper.getGlobalModels();
+        let models = await VehicleModel.find({}, '-_id name url image').lean();
+        if (models.length === 0) {
+            console.log('No models in cache, scraping...');
+            models = await scraper.getGlobalModels();
+            if (models.length > 0) {
+                await VehicleModel.insertMany(models, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            }
+        }
         res.json(models);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to scrape models' });
+        console.error('API /models error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch models' });
     }
 });
 
@@ -24,10 +185,19 @@ app.get('/api/specs', async (req, res) => {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
     try {
-        const specs = await scraper.getVehicleSpecs(url);
+        let specs = await VehicleSpec.find({ parentUrl: url }, '-_id year engine transmission url').lean();
+        if (specs.length === 0) {
+            console.log('No specs in cache, scraping...');
+            specs = await scraper.getVehicleSpecs(url);
+            if (specs.length > 0) {
+                const toSave = specs.map(s => ({ ...s, parentUrl: url }));
+                await VehicleSpec.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            }
+        }
         res.json(specs);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to scrape vehicle specifications' });
+        console.error('API /specs error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch vehicle specifications' });
     }
 });
 
@@ -37,10 +207,19 @@ app.get('/api/catalog', async (req, res) => {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
     try {
-        const categories = await scraper.getModelCatalog(url);
+        let categories = await VehicleCatalog.find({ parentUrl: url }, '-_id name url').lean();
+        if (categories.length === 0) {
+            console.log('No catalog in cache, scraping...');
+            categories = await scraper.getModelCatalog(url);
+            if (categories.length > 0) {
+                const toSave = categories.map(c => ({ ...c, parentUrl: url }));
+                await VehicleCatalog.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            }
+        }
         res.json(categories);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to scrape catalog' });
+        console.error('API /catalog error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch catalog' });
     }
 });
 
@@ -50,20 +229,43 @@ app.get('/api/parts', async (req, res) => {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
     try {
-        const parts = await scraper.getCategoryParts(url);
+        let parts = await VehiclePart.find({ parentUrl: url }, '-_id name number url').lean();
+        if (parts.length === 0) {
+            console.log('No parts in cache, scraping...');
+            parts = await scraper.getCategoryParts(url);
+            if (parts.length > 0) {
+                const toSave = parts.map(p => ({ ...p, parentUrl: url }));
+                await VehiclePart.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            }
+        }
         res.json(parts);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to scrape parts' });
+        console.error('API /parts error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch parts' });
     }
 });
 
-app.post('/api/vin-lookup', async (req, res) => {
+app.post('/api/vin-lookup', optionalAuth, async (req, res) => {
     const { vin } = req.body;
     if (!vin || vin.length !== 17) {
         return res.status(400).json({ error: 'Valid 17-digit VIN is required' });
     }
     try {
         const result = await scraper.searchByVin(vin);
+
+        // Save to search history if user is logged in
+        if (req.user && result.found) {
+            try {
+                await SearchHistory.create({
+                    userId: req.user.id,
+                    vin: vin.toUpperCase(),
+                    modelName: result.name || ''
+                });
+            } catch (e) {
+                console.error('Failed to save search history:', e.message);
+            }
+        }
+
         res.json(result);
     } catch (error) {
         const msg = error.message || '';
