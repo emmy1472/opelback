@@ -33,16 +33,15 @@ const userSchema = new mongoose.Schema({
 });
 
 // Auto-increment userId before saving
-userSchema.pre('save', async function (next) {
+userSchema.pre('save', async function () {
     if (this.isNew) {
-        const lastUser = await mongoose.model('User').findOne().sort({ userId: -1 });
+        const lastUser = await this.constructor.findOne().sort({ userId: -1 });
         this.userId = lastUser ? lastUser.userId + 1 : 1001;
     }
     if (this.isModified('password')) {
         const salt = await bcrypt.genSalt(10);
         this.password = await bcrypt.hash(this.password, salt);
     }
-    next();
 });
 
 userSchema.methods.comparePassword = async function (candidatePassword) {

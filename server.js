@@ -133,28 +133,55 @@ app.get('/api/auth/history', authMiddleware, async (req, res) => {
 
 app.get('/api/image-proxy', async (req, res) => {
     const { url } = req.query;
-    if (!url || !url.includes('7zap.com')) {
-        return res.status(400).json({ error: 'Invalid image URL' });
+    if (!url) {
+        return res.status(400).json({ error: 'URL parameter is required' });
     }
+    
+    if (!url.includes('7zap.com') && !url.includes('img.')) {
+        return res.status(403).json({ error: 'Only image URLs are allowed' });
+    }
+    
+    console.log(`[IMAGE PROXY] Fetching: ${url.substring(0, 80)}`);
+    
     try {
-        const axios = require('axios');
-        const response = await axios.get(url, {
-            responseType: 'arraybuffer',
-            timeout: 15000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://opel.7zap.com/',
-                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
-            }
+        const { execSync } = require('child_process');
+        const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        
+        // Use curl with Cloudflare bypass headers and cookie jar
+        const command = `curl.exe -A "${USER_AGENT}" -L "${url}" --max-time 30 --compressed -H "Accept: image/*" -H "Referer: https://7zap.com/" -c nul -b ""`;
+        const imageBuffer = execSync(command, {
+            encoding: 'buffer',
+            maxBuffer: 1024 * 1024 * 50,
+            timeout: 35000
         });
+        
         const ext = url.split('.').pop().split('?')[0].toLowerCase();
-        const mimeTypes = { webp: 'image/webp', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml' };
-        res.set('Content-Type', mimeTypes[ext] || response.headers['content-type'] || 'image/webp');
-        res.set('Cache-Control', 'public, max-age=86400');
-        res.send(Buffer.from(response.data));
+        const mimeTypes = { 
+            webp: 'image/webp', 
+            png: 'image/png', 
+            jpg: 'image/jpeg', 
+            jpeg: 'image/jpeg', 
+            gif: 'image/gif', 
+            svg: 'image/svg+xml',
+            bmp: 'image/bmp',
+            avif: 'image/avif'
+        };
+        
+        res.set('Content-Type', mimeTypes[ext] || 'image/jpeg');
+        res.set('Cache-Control', 'public, max-age=604800');
+        res.send(imageBuffer);
+        console.log(`[IMAGE PROXY] ✅ Success (${imageBuffer.length} bytes)`);
     } catch (error) {
-        console.error('Image proxy error:', error.message);
-        res.status(502).json({ error: 'Failed to fetch image' });
+        console.error(`[IMAGE PROXY ERROR] ${error.message}`);
+        // Return JSON error response instead of fallback pixel
+        // This is more useful for debugging Cloudflare issues
+        res.status(502).json({ 
+            error: 'Failed to fetch image',
+            message: error.message,
+            reason: 'Image server may be behind Cloudflare or temporarily unavailable',
+            url: url,
+            note: '7zap.com uses Cloudflare WAF which blocks automated requests. Images can be accessed through browser-based requests with Cloudflare cookie challenges.'
+        });
     }
 });
 

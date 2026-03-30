@@ -82,38 +82,43 @@ async function getModelCatalog(modelUrl) {
         const $ = cheerio.load(html);
         const categories = [];
 
-        // Look for categories in table rows
-        $('tr').each((i, el) => {
-            const row = $(el);
-            const name = row.find('td').eq(1).text().trim();
-            const href = row.find('td').last().find('a').attr('href');
+        // For Nuxt SPA: Look for links in various common patterns
+        // Try finding category links by href patterns
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            const text = $(el).text().trim();
 
-            if (href && name && name.length > 2) {
+            // Look for parts-catalog or specific category patterns
+            if (href && (
+                href.includes('/global/') ||
+                href.includes('/en/') ||
+                href.includes('-catalog')
+            ) && text.length > 2 && !text.includes('7zap') && href !== modelUrl) {
                 const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+                
+                // Avoid duplicates
                 if (!categories.some(c => c.url === fullUrl)) {
                     categories.push({
-                        name,
+                        name: text.substring(0, 50), // Limit name length
                         url: fullUrl
                     });
                 }
             }
         });
 
-        // Fallback: original logic if table extraction fails
-        if (categories.length === 0) {
-            $('a[href*="/parts-catalog/"]').each((i, el) => {
-                const href = $(el).attr('href');
-                const name = $(el).text().trim();
-                if (href && name && name.length > 1 && href !== modelUrl) {
-                    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-                    if (!categories.some(c => c.url === fullUrl)) {
-                        categories.push({ name, url: fullUrl });
-                    }
-                }
-            });
-        }
+        // Filter to keep only logical categories (avoid meta links, navigation links)
+        const filtered = categories.filter(c => {
+            const name = c.name.toLowerCase();
+            return !name.includes('privacy') && 
+                   !name.includes('cookie') &&
+                   !name.includes('terms') &&
+                   !name.includes('home') &&
+                   !name.includes('go back') &&
+                   c.url.toLowerCase().includes('catalog') ||
+                   c.url.toLowerCase().includes('parts');
+        });
 
-        return categories;
+        return filtered.length > 0 ? filtered : categories;
     } catch (error) {
         console.error('Error scraping model catalog:', error.message);
         throw error;
@@ -126,33 +131,42 @@ async function getCategoryParts(categoryUrl) {
         const $ = cheerio.load(html);
         const parts = [];
 
-        // Parts are usually in a table with specific structure
-        // Looking for rows that contain part information
-        $('tr').each((i, el) => {
-            const name = $(el).find('td').eq(1).text().trim();
-            const number = $(el).find('td').eq(2).text().trim();
-
-            if (name && number && number.length > 3) {
+        // For Nuxt SPA: Extract parts from common patterns
+        // Look for part numbers and names
+        $('a, div, li, span').each((i, el) => {
+            const $el = $(el);
+            const text = $el.text().trim();
+            const href = $el.attr('href');
+            
+            // Look for patterns like part numbers (numeric/alphanumeric codes)
+            // Examples: "1234567", "DL-123456", etc.
+            const partNumberMatch = text.match(/^[A-Z0-9\-\.]{4,20}$/i);
+            if (partNumberMatch && text.length > 3) {
                 parts.push({
-                    name,
-                    number,
-                    url: categoryUrl // Or specific part URL if available
+                    name: $el.find('span, div').first().text().trim() || text.substring(0, 50),
+                    number: text,
+                    url: href ? (href.startsWith('http') ? href : `${BASE_URL}${href}`) : categoryUrl
                 });
             }
         });
 
-        // Fallback: If table structure is different, look for common part patterns
+        // Alternative: Look for part links directly
         if (parts.length === 0) {
-            $('a[href*="/part/"]').each((i, el) => {
-                parts.push({
-                    name: $(el).text().trim(),
-                    number: $(el).attr('href').split('/').pop(),
-                    url: $(el).attr('href')
-                });
+            $('a[href*="/part/"], a[href*="/catalog/"], a').each((i, el) => {
+                const href = $(el).attr('href');
+                const name = $(el).text().trim();
+                if (href && name && name.length > 2 && !name.includes('cookie') && !name.includes('privacy')) {
+                    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+                    parts.push({
+                        name: name.substring(0, 50),
+                        number: href.split('/').slice(-2).join('/'),
+                        url: fullUrl
+                    });
+                }
             });
         }
 
-        return parts;
+        return parts.filter((p, i, arr) => arr.findIndex(x => x.number === p.number) === i); // Remove duplicates
     } catch (error) {
         console.error('Error scraping category parts:', error.message);
         throw error;
@@ -165,35 +179,56 @@ async function getVehicleSpecs(modelUrl) {
         const $ = cheerio.load(html);
         const specs = [];
 
-        // 7zap spec tables usually have rows with Year, Engine, Transmission
-        $('tr').each((i, el) => {
-            const cells = $(el).find('td');
-            // Expected columns: [Year, Engine, Transmission, ... , ActionLink]
-            if (cells.length >= 3) {
-                const year = cells.eq(0).text().trim();
-                const engine = cells.eq(1).text().trim();
-                const transmission = cells.eq(2).text().trim();
-                const link = $(el).find('a').attr('href');
+        // For Nuxt SPA: Look for spec patterns
+        // Year patterns: YYYY, 2000-2020 ranges
+        // Engine: V6, 1.6L, diesel, gasoline, etc.
+        // Transmission: manual, automatic, CVT
 
-                if (year && engine && transmission && link) {
+        $('*').each((i, el) => {
+            const $el = $(el);
+            const text = $el.text().trim();
+
+            // Look for year ranges or specifications
+            const yearMatch = text.match(/\b(19|20)\d{2}\b/);
+            const engineMatch = text.match(/(diesel|petrol|gasoline|electric|hybrid|engine|V4|V6|V8|turbo|\d\.?\d+[LT])/i);
+            const transmissionMatch = text.match(/(manual|automatic|cvt|a\/t|m\/t|transmission)/i);
+
+            if (yearMatch && engineMatch && transmissionMatch) {
+                const year = yearMatch[0];
+                const engine = engineMatch[0];
+                const transmission = transmissionMatch[0];
+
+                // Avoid duplicates
+                if (!specs.some(s => s.year === year && s.engine === engine)) {
                     specs.push({
-                        year,
-                        engine,
-                        transmission,
-                        url: link.startsWith('http') ? link : `${BASE_URL}${link}`
+                        year: parseInt(year),
+                        engine: engine.substring(0, 20),
+                        transmission: transmission.substring(0, 20),
+                        url: modelUrl
                     });
                 }
             }
         });
 
-        // Fallback: If table parsing fails, attempt to extract from __NUXT__ or script state
+        // Alternative: Look for table rows with year data
         if (specs.length === 0) {
-            const stateMatch = html.match(/window\.__NUXT__\s*=\s*({.*?});/s);
-            if (stateMatch) {
-                // Simplified extraction logic for the state object
-                // Usually contains lists of modifications/sub-models
-                console.log('Found Nuxt state, attempting complex extraction...');
-            }
+            $('tr').each((i, el) => {
+                const cells = $(el).find('td, th');
+                if (cells.length >= 3) {
+                    const year = cells.eq(0).text().trim();
+                    const engine = cells.eq(1).text().trim();
+                    const transmission = cells.eq(2).text().trim();
+
+                    if (year && engine && transmission && year.match(/\d{4}/)) {
+                        specs.push({
+                            year: parseInt(year.match(/\d{4}/)[0]),
+                            engine: engine.substring(0, 30),
+                            transmission: transmission.substring(0, 30),
+                            url: modelUrl
+                        });
+                    }
+                }
+            });
         }
 
         return specs;
