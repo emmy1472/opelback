@@ -1,35 +1,29 @@
 require('dotenv').config();
-// Force rebuild - v1.0.2 (Made all scrapers resilient with fallback empty arrays - 2026-03-31 01:45)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const scraper = require('./scraper');
 const connectDB = require('./db');
-const User = require('./models/User');
-const SearchHistory = require('./models/SearchHistory');
-const VehicleModel = require('./models/VehicleModel');
-const VehicleSpec = require('./models/VehicleSpec');
-const VehicleCatalog = require('./models/VehicleCatalog');
-const VehiclePart = require('./models/VehiclePart');
-const { generateToken, authMiddleware, optionalAuth } = require('./auth');
+const config = require('./config');
+
+// Route imports
+const authRoutes = require('./routes/auth');
+const catalogRoutes = require('./routes/catalog');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
 // Connect to MongoDB
 connectDB();
 
+// Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ═══════════════════════════════════════════════
-//  HEALTH CHECK
-// ═══════════════════════════════════════════════
-
+// Health check
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'OK',
-        version: '1.0.1',
+        version: '1.0.2',
         platform: process.platform,
         node: process.version,
         timestamp: new Date().toISOString(),
@@ -37,376 +31,24 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// ═══════════════════════════════════════════════
-//  AUTH ROUTES
-// ═══════════════════════════════════════════════
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api', catalogRoutes);
 
-// Register
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { username, email, password } = req.body;
-
-        if (!username || !email || !password) {
-            return res.status(400).json({ error: 'All fields are required' });
-        }
-        if (password.length < 6) {
-            return res.status(400).json({ error: 'Password must be at least 6 characters' });
-        }
-
-        // Check existing
-        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-        if (existingUser) {
-            const field = existingUser.email === email.toLowerCase() ? 'email' : 'username';
-            return res.status(400).json({ error: `This ${field} is already registered` });
-        }
-
-        const user = new User({ username, email, password });
-        await user.save();
-
-        const token = generateToken(user);
-        res.status(201).json({
-            token,
-            user: {
-                id: user.userId,
-                username: user.username,
-                email: user.email,
-                createdAt: user.createdAt
-            }
-        });
-    } catch (error) {
-        console.error('Register error:', error);
-        res.status(500).json({ error: 'Registration failed' });
-    }
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error('[SERVER] Error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
 });
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-
-        if (!email || !password) {
-            return res.status(400).json({ error: 'Email and password are required' });
-        }
-
-        const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user) {
-            return res.status(401).json({ error: 'Invalid email or password' });
-        }
-
-        const isMatch = await user.comparePassword(password);
-        if (!isMatch) {
-            return res.status(401).json({ error: 'Invalid email or password' });
-        }
-
-        const token = generateToken(user);
-        res.json({
-            token,
-            user: {
-                id: user.userId,
-                username: user.username,
-                email: user.email,
-                createdAt: user.createdAt
-            }
-        });
-    } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ error: 'Login failed' });
-    }
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Get current user
-app.get('/api/auth/me', authMiddleware, async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        res.json({
-            id: user.userId,
-            username: user.username,
-            email: user.email,
-            createdAt: user.createdAt
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to get user' });
-    }
+// Start server
+const server = app.listen(config.PORT, () => {
+    console.log(`[SERVER] Running on port ${config.PORT} (${config.NODE_ENV})`);
 });
 
-// Get search history
-app.get('/api/auth/history', authMiddleware, async (req, res) => {
-    try {
-        const history = await SearchHistory.find({ userId: req.user.id })
-            .sort({ searchedAt: -1 })
-            .limit(50);
-        res.json(history);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to get history' });
-    }
-});
-
-// ═══════════════════════════════════════════════
-//  IMAGE PROXY
-// ═══════════════════════════════════════════════
-
-app.get('/api/image-proxy', async (req, res) => {
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'URL parameter is required' });
-    }
-    
-    if (!url.includes('7zap.com') && !url.includes('img.')) {
-        return res.status(403).json({ error: 'Only image URLs are allowed' });
-    }
-    
-    console.log(`[IMAGE PROXY] Fetching: ${url.substring(0, 80)}`);
-    
-    try {
-        const { execSync } = require('child_process');
-        const CURL = process.platform === 'win32' ? 'curl.exe' : 'curl';
-        const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-        
-        // Use curl with Cloudflare bypass headers and cookie jar (platform-aware)
-        const command = `${CURL} -A "${USER_AGENT}" -L "${url}" --max-time 30 --compressed -H "Accept: image/*" -H "Referer: https://7zap.com/" --cookie-jar /tmp/cookies.txt --cookie "" --retry 2`;
-        const imageBuffer = execSync(command, {
-            encoding: 'buffer',
-            maxBuffer: 1024 * 1024 * 50,
-            timeout: 35000
-        });
-        
-        const ext = url.split('.').pop().split('?')[0].toLowerCase();
-        const mimeTypes = { 
-            webp: 'image/webp', 
-            png: 'image/png', 
-            jpg: 'image/jpeg', 
-            jpeg: 'image/jpeg', 
-            gif: 'image/gif', 
-            svg: 'image/svg+xml',
-            bmp: 'image/bmp',
-            avif: 'image/avif'
-        };
-        
-        res.set('Content-Type', mimeTypes[ext] || 'image/jpeg');
-        res.set('Cache-Control', 'public, max-age=604800');
-        res.send(imageBuffer);
-        console.log(`[IMAGE PROXY] ✅ Success (${imageBuffer.length} bytes)`);
-    } catch (error) {
-        console.error(`[IMAGE PROXY ERROR] ${error.message}`);
-        // Return JSON error response instead of fallback pixel
-        res.status(502).json({ 
-            error: 'Failed to fetch image',
-            message: error.message,
-            reason: 'Image server may be behind Cloudflare or temporarily unavailable',
-            url: url,
-            note: '7zap.com uses Cloudflare WAF which blocks automated requests. Images can be accessed through browser-based requests with Cloudflare cookie challenges.'
-        });
-    }
-});
-
-// ═══════════════════════════════════════════════
-//  CACHED SCRAPER API ENDPOINTS
-// ═══════════════════════════════════════════════
-
-app.get('/api/models', async (req, res) => {
-    try {
-        let models = await VehicleModel.find({}, '-_id name url image').lean();
-        if (models.length === 0) {
-            console.log('No models in cache, scraping...');
-            try {
-                models = await scraper.getGlobalModels();
-                if (models.length > 0) {
-                    await VehicleModel.insertMany(models, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
-                }
-            } catch (scrapeError) {
-                console.warn('Scraping models failed:', scrapeError.message);
-                models = [];
-            }
-        }
-        res.json(models);
-    } catch (error) {
-        console.error('API /models error:', error.message);
-        res.json([]);
-    }
-});
-
-app.get('/api/specs', async (req, res) => {
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'URL parameter is required' });
-    }
-    try {
-        let specs = await VehicleSpec.find({ parentUrl: url }, '-_id year engine transmission url').lean();
-        
-        // If not found by exact URL, try flexible matching by model slug
-        if (specs.length === 0) {
-            console.log('[API] No exact specs match, trying flexible cache...');
-            const modelMatch = url.match(/global\/([^\/-]+)/);
-            if (modelMatch) {
-                specs = await VehicleSpec.find(
-                    { parentUrl: { $regex: modelMatch[1] } },
-                    '-_id year engine transmission url'
-                ).lean();
-            }
-        }
-        
-        if (specs.length === 0) {
-            console.log('[API] No specs in cache, attempting scrape...');
-            try {
-                specs = await scraper.getVehicleSpecs(url);
-                if (specs.length > 0) {
-                    const toSave = specs.map(s => ({ ...s, parentUrl: url }));
-                    await VehicleSpec.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
-                }
-            } catch (scrapeError) {
-                console.warn('[API] ⚠️ Specs scraping failed:', scrapeError.message);
-                specs = [];
-            }
-        }
-        res.json(specs);
-    } catch (error) {
-        console.error('[API] Unexpected /specs error:', error.message);
-        res.json([]);
-    }
-});
-
-app.get('/api/catalog', async (req, res) => {
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'URL parameter is required' });
-    }
-    
-    try {
-        console.log(`[API] /catalog request for: ${url.substring(0, 80)}`);
-        
-        // Extract model slug from URL for caching
-        const modelMatch = url.match(/global\/([^\/]+)/);
-        const modelSlug = modelMatch ? modelMatch[1] : 'unknown';
-        
-        // Step 1: Try to get from cache - FIRST try exact match, then flexible match
-        let categories = await VehicleCatalog.find({ parentUrl: url }, '-_id name url').lean();
-        
-        // If not found by exact URL, try finding by model slug (flexible matching)
-        if (categories.length === 0) {
-            console.log('[API] No exact cache match, trying flexible model-based cache...');
-            const flexibleUrl = `%${modelSlug}%`;
-            categories = await VehicleCatalog.find(
-                { parentUrl: { $regex: modelSlug } },
-                '-_id name url'
-            ).limit(20).lean();
-        }
-        
-        // Step 2: If still nothing in cache, try to scrape
-        if (categories.length === 0) {
-            console.log('[API] No catalog in cache, attempting scrape...');
-            try {
-                categories = await scraper.getModelCatalog(url);
-                console.log(`[API] Scraper returned ${categories.length} categories`);
-                
-                // Save to cache if we got results
-                if (categories.length > 0) {
-                    const toSave = categories.map(c => ({ ...c, parentUrl: url }));
-                    await VehicleCatalog.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
-                    console.log(`[API] ✅ Cached ${categories.length} categories`);
-                }
-            } catch (scrapeError) {
-                console.warn('[API] ⚠️ Scraping failed:', scrapeError.message);
-                // Don't fail - return empty array
-                categories = [];
-            }
-        } else {
-            console.log(`[API] ✅ Found ${categories.length} categories in cache`);
-        }
-        
-        // Step 3: Always return SOMETHING (never return 500 error)
-        res.json(categories);
-        
-    } catch (error) {
-        console.error('[API] ❌ Unexpected /catalog error:', error.message);
-        res.json([]);
-    }
-});
-
-app.get('/api/parts', async (req, res) => {
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'URL parameter is required' });
-    }
-    try {
-        let parts = await VehiclePart.find({ parentUrl: url }, '-_id name number url').lean();
-        
-        // If not found by exact URL, try flexible matching by URL pattern
-        if (parts.length === 0) {
-            console.log('[API] No exact parts match, trying flexible cache...');
-            // Extract category slug and search
-            const categoryMatch = url.match(/#([^/]+)/);
-            if (categoryMatch) {
-                parts = await VehiclePart.find(
-                    { parentUrl: { $regex: categoryMatch[1] } },
-                    '-_id name number url'
-                ).limit(50).lean();
-            }
-        }
-        
-        if (parts.length === 0) {
-            console.log('[API] No parts in cache, attempting scrape...');
-            try {
-                parts = await scraper.getCategoryParts(url);
-                if (parts.length > 0) {
-                    const toSave = parts.map(p => ({ ...p, parentUrl: url }));
-                    await VehiclePart.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
-                }
-            } catch (scrapeError) {
-                console.warn('[API] ⚠️ Parts scraping failed:', scrapeError.message);
-                parts = [];
-            }
-        }
-        res.json(parts);
-    } catch (error) {
-        console.error('[API] Unexpected /parts error:', error.message);
-        res.json([]);
-    }
-});
-
-app.post('/api/vin-lookup', optionalAuth, async (req, res) => {
-    const { vin } = req.body;
-    if (!vin || vin.length !== 17) {
-        return res.status(400).json({ error: 'Valid 17-digit VIN is required' });
-    }
-    try {
-        const result = await scraper.searchByVin(vin);
-
-        // Save to search history if user is logged in
-        if (req.user && result.found) {
-            try {
-                await SearchHistory.create({
-                    userId: req.user.id,
-                    vin: vin.toUpperCase(),
-                    modelName: result.name || ''
-                });
-            } catch (e) {
-                console.error('Failed to save search history:', e.message);
-            }
-        }
-
-        res.json(result);
-    } catch (error) {
-        const msg = error.message || '';
-        console.error('VIN lookup error:', msg);
-        
-        if (msg.includes('Network error') || msg.includes('Could not resolve host')) {
-            return res.json({
-                found: false,
-                message: 'Cannot connect to the parts database. Please check your internet connection and try again.'
-            });
-        }
-        
-        // For any other error, return graceful response instead of 500
-        res.json({
-            found: false,
-            message: 'VIN lookup temporarily unavailable. Try again later.'
-        });
-    }
-});
-
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-});
+module.exports = app;

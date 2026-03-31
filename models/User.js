@@ -12,14 +12,16 @@ const userSchema = new mongoose.Schema({
         unique: true,
         trim: true,
         minlength: 3,
-        maxlength: 30
+        maxlength: 30,
+        index: true
     },
     email: {
         type: String,
         required: true,
         unique: true,
         trim: true,
-        lowercase: true
+        lowercase: true,
+        index: true
     },
     password: {
         type: String,
@@ -28,11 +30,13 @@ const userSchema = new mongoose.Schema({
     },
     createdAt: {
         type: Date,
-        default: Date.now
+        default: Date.now,
+        index: true
     }
 });
 
-// Auto-increment userId before saving
+// Create compound index for faster lookups
+userSchema.index({ email: 1, username: 1 });
 userSchema.pre('save', async function () {
     if (this.isNew) {
         const lastUser = await this.constructor.findOne().sort({ userId: -1 });

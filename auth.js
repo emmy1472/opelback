@@ -1,13 +1,11 @@
 const jwt = require('jsonwebtoken');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'opelcore-secret-key-change-in-production';
-const JWT_EXPIRES_IN = '7d';
+const config = require('./config');
 
 function generateToken(user) {
     return jwt.sign(
         { id: user._id, userId: user.userId, username: user.username },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
+        config.JWT_SECRET,
+        { expiresIn: config.JWT_EXPIRES_IN }
     );
 }
 
@@ -19,7 +17,7 @@ function authMiddleware(req, res, next) {
 
     try {
         const token = authHeader.split(' ')[1];
-        const decoded = jwt.verify(token, JWT_SECRET);
+        const decoded = jwt.verify(token, config.JWT_SECRET);
         req.user = decoded;
         next();
     } catch (error) {
@@ -33,7 +31,7 @@ function optionalAuth(req, res, next) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
         try {
             const token = authHeader.split(' ')[1];
-            req.user = jwt.verify(token, JWT_SECRET);
+            req.user = jwt.verify(token, config.JWT_SECRET);
         } catch (e) {
             // Token invalid, continue without user
         }
@@ -41,4 +39,4 @@ function optionalAuth(req, res, next) {
     next();
 }
 
-module.exports = { generateToken, authMiddleware, optionalAuth, JWT_SECRET };
+module.exports = { generateToken, authMiddleware, optionalAuth };

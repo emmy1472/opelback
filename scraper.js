@@ -1,96 +1,38 @@
-const { execSync } = require('child_process');
 const cheerio = require('cheerio');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-
-
-const BASE_URL = 'https://opel.7zap.com';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
-
-// Force curl command based on platform - use process.platform directly
-const CURL = process.platform === 'win32' ? 'curl.exe' : 'curl';
-
-async function fetchWithCurl(url, method = 'GET', postData = null, retryCount = 0) {
-    try {
-        console.log(`[SCRAPER] Platform: ${process.platform}, CMD: ${CURL}`);
-        let command;
-        
-        if (method === 'POST' && postData) {
-            const dataStr = Object.entries(postData)
-                .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-                .join('&');
-            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html" -H "Referer: https://opel.7zap.com/" -L -X POST -d "${dataStr}" "${url}" --max-time 60 --connect-timeout 15 --retry 2`;
-        } else {
-            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -H "Accept-Language: en-US,en;q=0.9" -H "Referer: https://opel.7zap.com/" -H "Accept-Encoding: gzip, deflate, br" -L "${url}" --max-time 60 --connect-timeout 15 --retry 2 --compressed`;
-        }
-        
-        console.log(`[SCRAPER] Fetching: ${url.substring(0, 80)}...`);
-        
-        const stdout = execSync(command, {
-            encoding: 'utf-8',
-            maxBuffer: 1024 * 1024 * 10,
-            timeout: 65000
-        });
-        
-        console.log(`[SCRAPER] ✅ Successfully fetched ${url.substring(0, 50)}... (${stdout.length} bytes)`);
-        return stdout;
-    } catch (error) {
-        const msg = error.message || '';
-        console.error(`[SCRAPER] ❌ Error fetching ${url}:`, msg.substring(0, 200));
-        
-        // Retry logic for network errors
-        if (retryCount < 2 && (msg.includes('timed out') || msg.includes('ETIMEDOUT'))) {
-            console.log(`[SCRAPER] Retrying... (attempt ${retryCount + 1}/2)`);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-            return fetchWithCurl(url, method, postData, retryCount + 1);
-        }
-        
-        if (msg.includes('Could not resolve host') || msg.includes('Connection refused')) {
-            const networkErr = new Error(`Network error: Cannot reach ${url}. The server may be unreachable.`);
-            networkErr.isNetworkError = true;
-            throw networkErr;
-        }
-        throw error;
-    }
-}
+const config = require('./config');
+const { fetchWithCurl } = require('./utils/curl');
 
 
 async function getGlobalModels() {
     try {
-        const html = await fetchWithCurl(`${BASE_URL}/en/global/`);
+        const html = await fetchWithCurl(`${config.BASE_URL}/en/global/`);
         const $ = cheerio.load(html);
         const models = [];
 
-        // Use regex for images to be robust against formatting differences (e.g. escaped characters)
+        // Extract image URLs from schema.json
         const imgRegex = /"url":"(https:\/\/opel\.7zap\.com\/en\/global\/[^"]+\/)","name":"[^"]+","inLanguage":"en","image":"(https:\/\/img\.7zap\.com\/images\/oem\/models\/[^"]+\.webp)"/g;
-        let imageMap = {};
+        const imageMap = {};
         let match;
         while ((match = imgRegex.exec(html)) !== null) {
             imageMap[match[1]] = match[2];
         }
 
-        // Updated selector based on adam_catalog.html analysis
+        // Extract model links
         $('a[href*="-parts-catalog/"]').each((i, el) => {
             const href = $(el).attr('href');
             let name = $(el).text().trim();
             if (href && name && name.length > 2) {
-                // Clean up name
                 name = name.replace(/\s*-\s*parts catalog.*/i, '').trim();
-                const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+                const fullUrl = href.startsWith('http') ? href : `${config.BASE_URL}${href}`;
                 if (!models.some(m => m.url === fullUrl)) {
-                    models.push({
-                        name,
-                        url: fullUrl,
-                        image: imageMap[fullUrl] || imageMap[fullUrl + '/'] || null
-                    });
+                    models.push({ name, url: fullUrl, image: imageMap[fullUrl] || null });
                 }
             }
         });
 
         return models;
     } catch (error) {
-        console.error('Error scraping global models:', error.message);
+        console.error('[SCRAPER] Error scraping global models:', error.message);
         throw error;
     }
 }
@@ -101,80 +43,49 @@ async function getModelCatalog(modelUrl) {
         const $ = cheerio.load(html);
         const categories = [];
 
-        // For Nuxt SPA: Look for links in various common patterns
-        // Try finding category links by href patterns
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             const text = $(el).text().trim();
 
-            // Look for parts-catalog or specific category patterns
-            if (href && (
-                href.includes('/global/') ||
-                href.includes('/en/') ||
-                href.includes('-catalog')
-            ) && text.length > 2 && !text.includes('7zap') && href !== modelUrl) {
-                const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-                
-                // Avoid duplicates
+            if (href && (href.includes('/global/') || href.includes('/en/') || href.includes('-catalog')) 
+                && text.length > 2 && !text.includes('7zap') && href !== modelUrl) {
+                const fullUrl = href.startsWith('http') ? href : `${config.BASE_URL}${href}`;
                 if (!categories.some(c => c.url === fullUrl)) {
-                    categories.push({
-                        name: text.substring(0, 50), // Limit name length
-                        url: fullUrl
-                    });
+                    categories.push({ name: text.substring(0, 50), url: fullUrl });
                 }
             }
         });
 
-        // Filter to keep only logical categories (avoid meta links, navigation links)
+        // Filter out navigation links
         const filtered = categories.filter(c => {
             const name = c.name.toLowerCase();
-            return !name.includes('privacy') && 
-                   !name.includes('cookie') &&
-                   !name.includes('terms') &&
-                   !name.includes('home') &&
-                   !name.includes('go back') &&
-                   (c.url.toLowerCase().includes('catalog') ||
-                    c.url.toLowerCase().includes('parts'));
+            return !['privacy', 'cookie', 'terms', 'home', 'go back'].some(word => name.includes(word))
+                && (c.url.toLowerCase().includes('catalog') || c.url.toLowerCase().includes('parts'));
         });
 
-        // If we got results, return them; otherwise return filtered
         if (filtered.length > 0) return filtered;
         if (categories.length > 0) return categories;
-        
-        // Fallback: return common Opel part categories
+
+        // Fallback: return default categories
         console.warn('[SCRAPER] No categories found, returning defaults');
         const modelPath = modelUrl.match(/global\/([^\/]+)/)?.[1] || 'astra-k';
         return [
-            { name: 'Engine Parts', url: `${BASE_URL}/en/global/${modelPath}-engine/` },
-            { name: 'Transmission', url: `${BASE_URL}/en/global/${modelPath}-transmission/` },
-            { name: 'Suspension', url: `${BASE_URL}/en/global/${modelPath}-suspension/` },
-            { name: 'Brakes', url: `${BASE_URL}/en/global/${modelPath}-brakes/` },
-            { name: 'Electrical', url: `${BASE_URL}/en/global/${modelPath}-electrical/` }
+            { name: 'Engine Parts', url: `${config.BASE_URL}/en/global/${modelPath}-engine/` },
+            { name: 'Transmission', url: `${config.BASE_URL}/en/global/${modelPath}-transmission/` },
+            { name: 'Suspension', url: `${config.BASE_URL}/en/global/${modelPath}-suspension/` },
+            { name: 'Brakes', url: `${config.BASE_URL}/en/global/${modelPath}-brakes/` },
+            { name: 'Electrical', url: `${config.BASE_URL}/en/global/${modelPath}-electrical/` }
         ];
-        
     } catch (error) {
         console.error('[SCRAPER] Error scraping model catalog:', error.message);
         
-        // On network error, try to extract model name and return default categories
-        if (error.isNetworkError || error.message.includes('Network error')) {
-            console.warn('[SCRAPER] Network error detected, returning default categories');
-            const modelPath = modelUrl.match(/global\/([^\/]+)/)?.[1] || 'astra-k';
-            return [
-                { name: 'Engine', url: `${BASE_URL}/en/global/${modelPath}-engine/` },
-                { name: 'Transmission', url: `${BASE_URL}/en/global/${modelPath}-transmission/` },
-                { name: 'Suspension', url: `${BASE_URL}/en/global/${modelPath}-suspension/` },
-                { name: 'Brakes', url: `${BASE_URL}/en/global/${modelPath}-brakes/` }
-            ];
-        }
-        
-        // For any other error, log and return default categories (graceful degradation)
-        console.warn('[SCRAPER] Unexpected error in getModelCatalog, returning defaults:', error.message);
+        // Graceful degradation
         const modelPath = modelUrl.match(/global\/([^\/]+)/)?.[1] || 'astra-k';
         return [
-            { name: 'Engine', url: `${BASE_URL}/en/global/${modelPath}-engine/` },
-            { name: 'Transmission', url: `${BASE_URL}/en/global/${modelPath}-transmission/` },
-            { name: 'Suspension', url: `${BASE_URL}/en/global/${modelPath}-suspension/` },
-            { name: 'Brakes', url: `${BASE_URL}/en/global/${modelPath}-brakes/` }
+            { name: 'Engine', url: `${config.BASE_URL}/en/global/${modelPath}-engine/` },
+            { name: 'Transmission', url: `${config.BASE_URL}/en/global/${modelPath}-transmission/` },
+            { name: 'Suspension', url: `${config.BASE_URL}/en/global/${modelPath}-suspension/` },
+            { name: 'Brakes', url: `${config.BASE_URL}/en/global/${modelPath}-brakes/` }
         ];
     }
 }
@@ -185,32 +96,29 @@ async function getCategoryParts(categoryUrl) {
         const $ = cheerio.load(html);
         const parts = [];
 
-        // For Nuxt SPA: Extract parts from common patterns
-        // Look for part numbers and names
+        // Look for part numbers (alphanumeric patterns)
         $('a, div, li, span').each((i, el) => {
             const $el = $(el);
             const text = $el.text().trim();
             const href = $el.attr('href');
-            
-            // Look for patterns like part numbers (numeric/alphanumeric codes)
-            // Examples: "1234567", "DL-123456", etc.
             const partNumberMatch = text.match(/^[A-Z0-9\-\.]{4,20}$/i);
+            
             if (partNumberMatch && text.length > 3) {
                 parts.push({
                     name: $el.find('span, div').first().text().trim() || text.substring(0, 50),
                     number: text,
-                    url: href ? (href.startsWith('http') ? href : `${BASE_URL}${href}`) : categoryUrl
+                    url: href ? (href.startsWith('http') ? href : `${config.BASE_URL}${href}`) : categoryUrl
                 });
             }
         });
 
-        // Alternative: Look for part links directly
+        // Fallback: look for part links
         if (parts.length === 0) {
             $('a[href*="/part/"], a[href*="/catalog/"], a').each((i, el) => {
                 const href = $(el).attr('href');
                 const name = $(el).text().trim();
-                if (href && name && name.length > 2 && !name.includes('cookie') && !name.includes('privacy')) {
-                    const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+                if (href && name && name.length > 2 && !['cookie', 'privacy'].some(word => name.includes(word))) {
+                    const fullUrl = href.startsWith('http') ? href : `${config.BASE_URL}${href}`;
                     parts.push({
                         name: name.substring(0, 50),
                         number: href.split('/').slice(-2).join('/'),
@@ -220,10 +128,10 @@ async function getCategoryParts(categoryUrl) {
             });
         }
 
-        return parts.filter((p, i, arr) => arr.findIndex(x => x.number === p.number) === i); // Remove duplicates
+        // Remove duplicates
+        return parts.filter((p, i, arr) => arr.findIndex(x => x.number === p.number) === i);
     } catch (error) {
-        console.error('Error scraping category parts:', error.message);
-        // Gracefully degrade: return empty array instead of throwing
+        console.error('[SCRAPER] Error scraping category parts:', error.message);
         return [];
     }
 }
@@ -234,16 +142,9 @@ async function getVehicleSpecs(modelUrl) {
         const $ = cheerio.load(html);
         const specs = [];
 
-        // For Nuxt SPA: Look for spec patterns
-        // Year patterns: YYYY, 2000-2020 ranges
-        // Engine: V6, 1.6L, diesel, gasoline, etc.
-        // Transmission: manual, automatic, CVT
-
         $('*').each((i, el) => {
             const $el = $(el);
             const text = $el.text().trim();
-
-            // Look for year ranges or specifications
             const yearMatch = text.match(/\b(19|20)\d{2}\b/);
             const engineMatch = text.match(/(diesel|petrol|gasoline|electric|hybrid|engine|V4|V6|V8|turbo|\d\.?\d+[LT])/i);
             const transmissionMatch = text.match(/(manual|automatic|cvt|a\/t|m\/t|transmission)/i);
@@ -253,7 +154,6 @@ async function getVehicleSpecs(modelUrl) {
                 const engine = engineMatch[0];
                 const transmission = transmissionMatch[0];
 
-                // Avoid duplicates
                 if (!specs.some(s => s.year === year && s.engine === engine)) {
                     specs.push({
                         year: parseInt(year),
@@ -265,7 +165,7 @@ async function getVehicleSpecs(modelUrl) {
             }
         });
 
-        // Alternative: Look for table rows with year data
+        // Look for table data
         if (specs.length === 0) {
             $('tr').each((i, el) => {
                 const cells = $(el).find('td, th');
@@ -273,10 +173,11 @@ async function getVehicleSpecs(modelUrl) {
                     const year = cells.eq(0).text().trim();
                     const engine = cells.eq(1).text().trim();
                     const transmission = cells.eq(2).text().trim();
+                    const yearNum = year.match(/\d{4}/);
 
-                    if (year && engine && transmission && year.match(/\d{4}/)) {
+                    if (year && engine && transmission && yearNum) {
                         specs.push({
-                            year: parseInt(year.match(/\d{4}/)[0]),
+                            year: parseInt(yearNum[0]),
                             engine: engine.substring(0, 30),
                             transmission: transmission.substring(0, 30),
                             url: modelUrl
@@ -288,8 +189,7 @@ async function getVehicleSpecs(modelUrl) {
 
         return specs;
     } catch (error) {
-        console.error('Error scraping vehicle specs:', error.message);
-        // Gracefully degrade: return empty array instead of throwing
+        console.error('[SCRAPER] Error scraping vehicle specs:', error.message);
         return [];
     }
 }
@@ -441,7 +341,7 @@ function decodeVinLocally(vin) {
     }
 
     // Construct 7zap catalog URL for this model
-    const catalogUrl = `${BASE_URL}/en/${wmiEntry.region}/${modelSlug}/`;
+    const catalogUrl = `${config.BASE_URL}/en/${wmiEntry.region}/${modelSlug}/`;
 
     return {
         found: true,
