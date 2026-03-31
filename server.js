@@ -235,6 +235,19 @@ app.get('/api/specs', async (req, res) => {
     }
     try {
         let specs = await VehicleSpec.find({ parentUrl: url }, '-_id year engine transmission url').lean();
+        
+        // If not found by exact URL, try flexible matching by model slug
+        if (specs.length === 0) {
+            console.log('[API] No exact specs match, trying flexible cache...');
+            const modelMatch = url.match(/global\/([^\/-]+)/);
+            if (modelMatch) {
+                specs = await VehicleSpec.find(
+                    { parentUrl: { $regex: modelMatch[1] } },
+                    '-_id year engine transmission url'
+                ).lean();
+            }
+        }
+        
         if (specs.length === 0) {
             console.log('[API] No specs in cache, attempting scrape...');
             try {
@@ -264,10 +277,24 @@ app.get('/api/catalog', async (req, res) => {
     try {
         console.log(`[API] /catalog request for: ${url.substring(0, 80)}`);
         
-        // Step 1: Try to get from cache
+        // Extract model slug from URL for caching
+        const modelMatch = url.match(/global\/([^\/]+)/);
+        const modelSlug = modelMatch ? modelMatch[1] : 'unknown';
+        
+        // Step 1: Try to get from cache - FIRST try exact match, then flexible match
         let categories = await VehicleCatalog.find({ parentUrl: url }, '-_id name url').lean();
         
-        // Step 2: If nothing in cache, try to scrape
+        // If not found by exact URL, try finding by model slug (flexible matching)
+        if (categories.length === 0) {
+            console.log('[API] No exact cache match, trying flexible model-based cache...');
+            const flexibleUrl = `%${modelSlug}%`;
+            categories = await VehicleCatalog.find(
+                { parentUrl: { $regex: modelSlug } },
+                '-_id name url'
+            ).limit(20).lean();
+        }
+        
+        // Step 2: If still nothing in cache, try to scrape
         if (categories.length === 0) {
             console.log('[API] No catalog in cache, attempting scrape...');
             try {
@@ -282,8 +309,7 @@ app.get('/api/catalog', async (req, res) => {
                 }
             } catch (scrapeError) {
                 console.warn('[API] ⚠️ Scraping failed:', scrapeError.message);
-                console.warn('[API] Stack:', scrapeError.stack?.substring(0, 200));
-                // Don't fail - return empty array which will trigger fallback on frontend
+                // Don't fail - return empty array
                 categories = [];
             }
         } else {
@@ -291,12 +317,10 @@ app.get('/api/catalog', async (req, res) => {
         }
         
         // Step 3: Always return SOMETHING (never return 500 error)
-        res.json(categories); // Will be [] if scrape failed, which is ok
+        res.json(categories);
         
     } catch (error) {
         console.error('[API] ❌ Unexpected /catalog error:', error.message);
-        console.error('[API] Stack:', error.stack?.substring(0, 200));
-        // Even on unexpected error, return empty array instead of 500
         res.json([]);
     }
 });
@@ -308,6 +332,20 @@ app.get('/api/parts', async (req, res) => {
     }
     try {
         let parts = await VehiclePart.find({ parentUrl: url }, '-_id name number url').lean();
+        
+        // If not found by exact URL, try flexible matching by URL pattern
+        if (parts.length === 0) {
+            console.log('[API] No exact parts match, trying flexible cache...');
+            // Extract category slug and search
+            const categoryMatch = url.match(/#([^/]+)/);
+            if (categoryMatch) {
+                parts = await VehiclePart.find(
+                    { parentUrl: { $regex: categoryMatch[1] } },
+                    '-_id name number url'
+                ).limit(50).lean();
+            }
+        }
+        
         if (parts.length === 0) {
             console.log('[API] No parts in cache, attempting scrape...');
             try {
