@@ -8,6 +8,7 @@ const config = require('./config');
 // Route imports
 const authRoutes = require('./routes/auth');
 const catalogRoutes = require('./routes/catalog');
+const scraperRoutes = require('./routes/scraper');
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.get('/api/health', (req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api', catalogRoutes);
+app.use('/api/scrape', scraperRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
