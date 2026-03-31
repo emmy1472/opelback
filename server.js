@@ -231,17 +231,22 @@ app.get('/api/specs', async (req, res) => {
     try {
         let specs = await VehicleSpec.find({ parentUrl: url }, '-_id year engine transmission url').lean();
         if (specs.length === 0) {
-            console.log('No specs in cache, scraping...');
-            specs = await scraper.getVehicleSpecs(url);
-            if (specs.length > 0) {
-                const toSave = specs.map(s => ({ ...s, parentUrl: url }));
-                await VehicleSpec.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            console.log('[API] No specs in cache, attempting scrape...');
+            try {
+                specs = await scraper.getVehicleSpecs(url);
+                if (specs.length > 0) {
+                    const toSave = specs.map(s => ({ ...s, parentUrl: url }));
+                    await VehicleSpec.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+                }
+            } catch (scrapeError) {
+                console.warn('[API] ⚠️ Specs scraping failed:', scrapeError.message);
+                specs = [];
             }
         }
         res.json(specs);
     } catch (error) {
-        console.error('API /specs error:', error.message);
-        res.status(500).json({ error: 'Failed to fetch vehicle specifications' });
+        console.error('[API] Unexpected /specs error:', error.message);
+        res.json([]);
     }
 });
 
@@ -250,37 +255,42 @@ app.get('/api/catalog', async (req, res) => {
     if (!url) {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
+    
     try {
         console.log(`[API] /catalog request for: ${url.substring(0, 80)}`);
         
+        // Step 1: Try to get from cache
         let categories = await VehicleCatalog.find({ parentUrl: url }, '-_id name url').lean();
         
+        // Step 2: If nothing in cache, try to scrape
         if (categories.length === 0) {
-            console.log('[API] No catalog in cache, scraping from 7zap.com...');
-            categories = await scraper.getModelCatalog(url);
-            console.log(`[API] Scraper returned ${categories.length} categories`);
-            
-            if (categories.length > 0) {
-                const toSave = categories.map(c => ({ ...c, parentUrl: url }));
-                await VehicleCatalog.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
-                console.log(`[API] ✅ Cached ${categories.length} categories`);
-            } else {
-                console.warn('[API] ⚠️ Scraper returned empty results');
+            console.log('[API] No catalog in cache, attempting scrape...');
+            try {
+                categories = await scraper.getModelCatalog(url);
+                console.log(`[API] Scraper returned ${categories.length} categories`);
+                
+                // Save to cache if we got results
+                if (categories.length > 0) {
+                    const toSave = categories.map(c => ({ ...c, parentUrl: url }));
+                    await VehicleCatalog.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+                    console.log(`[API] ✅ Cached ${categories.length} categories`);
+                }
+            } catch (scrapeError) {
+                console.warn('[API] ⚠️ Scraping failed:', scrapeError.message);
+                // Don't fail - return empty array which will trigger fallback on frontend
+                categories = [];
             }
         } else {
             console.log(`[API] ✅ Found ${categories.length} categories in cache`);
         }
         
-        res.json(categories);
-    } catch (error) {
-        console.error('[API] ❌ /catalog error:', error.message);
-        console.error('[API] Full error:', error);
+        // Step 3: Always return SOMETHING (never return 500 error)
+        res.json(categories); // Will be [] if scrape failed, which is ok
         
-        res.status(500).json({ 
-            error: 'Failed to fetch catalog',
-            details: error.message,
-            debug: process.env.NODE_ENV === 'production' ? undefined : error.stack
-        });
+    } catch (error) {
+        console.error('[API] ❌ Unexpected /catalog error:', error.message);
+        // Even on unexpected error, return empty array instead of 500
+        res.json([]);
     }
 });
 
@@ -292,17 +302,22 @@ app.get('/api/parts', async (req, res) => {
     try {
         let parts = await VehiclePart.find({ parentUrl: url }, '-_id name number url').lean();
         if (parts.length === 0) {
-            console.log('No parts in cache, scraping...');
-            parts = await scraper.getCategoryParts(url);
-            if (parts.length > 0) {
-                const toSave = parts.map(p => ({ ...p, parentUrl: url }));
-                await VehiclePart.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            console.log('[API] No parts in cache, attempting scrape...');
+            try {
+                parts = await scraper.getCategoryParts(url);
+                if (parts.length > 0) {
+                    const toSave = parts.map(p => ({ ...p, parentUrl: url }));
+                    await VehiclePart.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+                }
+            } catch (scrapeError) {
+                console.warn('[API] ⚠️ Parts scraping failed:', scrapeError.message);
+                parts = [];
             }
         }
         res.json(parts);
     } catch (error) {
-        console.error('API /parts error:', error.message);
-        res.status(500).json({ error: 'Failed to fetch parts' });
+        console.error('[API] Unexpected /parts error:', error.message);
+        res.json([]);
     }
 });
 
