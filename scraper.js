@@ -20,9 +20,9 @@ async function fetchWithCurl(url, method = 'GET', postData = null, retryCount = 
             const dataStr = Object.entries(postData)
                 .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
                 .join('&');
-            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html" -L -X POST -d "${dataStr}" "${url}" --max-time 60 --connect-timeout 15 --retry 2`;
+            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html" -H "Referer: https://opel.7zap.com/" -L -X POST -d "${dataStr}" "${url}" --max-time 60 --connect-timeout 15 --retry 2`;
         } else {
-            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html,application/xhtml+xml" -H "Accept-Language: en-US,en;q=0.9" -L "${url}" --max-time 60 --connect-timeout 15 --retry 2`;
+            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -H "Accept-Language: en-US,en;q=0.9" -H "Referer: https://opel.7zap.com/" -H "Accept-Encoding: gzip, deflate, br" -L "${url}" --max-time 60 --connect-timeout 15 --retry 2 --compressed`;
         }
         
         console.log(`[SCRAPER] Fetching: ${url.substring(0, 80)}...`);

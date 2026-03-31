@@ -282,6 +282,7 @@ app.get('/api/catalog', async (req, res) => {
                 }
             } catch (scrapeError) {
                 console.warn('[API] ⚠️ Scraping failed:', scrapeError.message);
+                console.warn('[API] Stack:', scrapeError.stack?.substring(0, 200));
                 // Don't fail - return empty array which will trigger fallback on frontend
                 categories = [];
             }
@@ -294,6 +295,7 @@ app.get('/api/catalog', async (req, res) => {
         
     } catch (error) {
         console.error('[API] ❌ Unexpected /catalog error:', error.message);
+        console.error('[API] Stack:', error.stack?.substring(0, 200));
         // Even on unexpected error, return empty array instead of 500
         res.json([]);
     }
