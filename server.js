@@ -201,9 +201,6 @@ app.get('/api/image-proxy', async (req, res) => {
         });
     }
 });
-        });
-    }
-});
 
 // ═══════════════════════════════════════════════
 //  CACHED SCRAPER API ENDPOINTS
