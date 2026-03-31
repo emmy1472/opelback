@@ -1,6 +1,7 @@
 require('dotenv').config();
 // Force rebuild - v1.0.1 (Fixed curl platform detection on 2026-03-31 01:30)
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
 const scraper = require('./scraper');
 const connectDB = require('./db');
@@ -20,6 +21,21 @@ connectDB();
 
 app.use(cors());
 app.use(express.json());
+
+// ═══════════════════════════════════════════════
+//  HEALTH CHECK
+// ═══════════════════════════════════════════════
+
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'OK',
+        version: '1.0.1',
+        platform: process.platform,
+        node: process.version,
+        timestamp: new Date().toISOString(),
+        mongoConnected: !!mongoose.connection.readyState
+    });
+});
 
 // ═══════════════════════════════════════════════
 //  AUTH ROUTES

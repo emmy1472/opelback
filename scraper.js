@@ -53,6 +53,7 @@ async function fetchWithCurl(url, method = 'GET', postData = null, retryCount = 
         }
         throw error;
     }
+}
 
 
 async function getGlobalModels() {
