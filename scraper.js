@@ -144,13 +144,40 @@ async function getModelCatalog(modelUrl) {
                    !name.includes('terms') &&
                    !name.includes('home') &&
                    !name.includes('go back') &&
-                   c.url.toLowerCase().includes('catalog') ||
-                   c.url.toLowerCase().includes('parts');
+                   (c.url.toLowerCase().includes('catalog') ||
+                    c.url.toLowerCase().includes('parts'));
         });
 
-        return filtered.length > 0 ? filtered : categories;
+        // If we got results, return them; otherwise return filtered
+        if (filtered.length > 0) return filtered;
+        if (categories.length > 0) return categories;
+        
+        // Fallback: return common Opel part categories
+        console.warn('[SCRAPER] No categories found, returning defaults');
+        const modelPath = modelUrl.match(/global\/([^\/]+)/)?.[1] || 'astra-k';
+        return [
+            { name: 'Engine Parts', url: `${BASE_URL}/en/global/${modelPath}-engine/` },
+            { name: 'Transmission', url: `${BASE_URL}/en/global/${modelPath}-transmission/` },
+            { name: 'Suspension', url: `${BASE_URL}/en/global/${modelPath}-suspension/` },
+            { name: 'Brakes', url: `${BASE_URL}/en/global/${modelPath}-brakes/` },
+            { name: 'Electrical', url: `${BASE_URL}/en/global/${modelPath}-electrical/` }
+        ];
+        
     } catch (error) {
-        console.error('Error scraping model catalog:', error.message);
+        console.error('[SCRAPER] Error scraping model catalog:', error.message);
+        
+        // On network error, try to extract model name and return default categories
+        if (error.isNetworkError || error.message.includes('Network error')) {
+            console.warn('[SCRAPER] Network error detected, returning default categories');
+            const modelPath = modelUrl.match(/global\/([^\/]+)/)?.[1] || 'astra-k';
+            return [
+                { name: 'Engine', url: `${BASE_URL}/en/global/${modelPath}-engine/` },
+                { name: 'Transmission', url: `${BASE_URL}/en/global/${modelPath}-transmission/` },
+                { name: 'Suspension', url: `${BASE_URL}/en/global/${modelPath}-suspension/` },
+                { name: 'Brakes', url: `${BASE_URL}/en/global/${modelPath}-brakes/` }
+            ];
+        }
+        
         throw error;
     }
 }

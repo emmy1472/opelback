@@ -285,4 +285,16 @@ See [VERCEL_FIXES.md](VERCEL_FIXES.md) for detailed troubleshooting.
 
 ---
 
+## 🔧 Troubleshooting Catalog Endpoint
+
+If `/api/catalog` returns **"Failed to fetch catalog"** on Vercel:
+
+See [VERCEL_CATALOG_DEBUG.md](VERCEL_CATALOG_DEBUG.md) for:
+- How to check Vercel runtime logs
+- Common errors and solutions
+- Cache-only fallback mode
+- Alternative scraper services
+
+---
+
 **Backend is fully operational! 🚀**
