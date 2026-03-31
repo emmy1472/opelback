@@ -11,7 +11,7 @@ const router = express.Router();
 
 /**
  * POST /api/scrape/models
- * Deep scrape an array of models
+ * Deep scrape an array of models and auto-save all parts to database
  * 
  * Request body:
  * {
@@ -21,7 +21,7 @@ const router = express.Router();
  *   ]
  * }
  * 
- * Returns: Hierarchical structure of categories, sub-categories, and parts
+ * Returns: Scraping statistics (models processed, parts saved, etc.)
  */
 router.post('/models', authMiddleware, async (req, res) => {
     try {
@@ -37,32 +37,28 @@ router.post('/models', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'Each model must have name and url properties' });
         }
 
-        console.log(`[SCRAPE-API] Starting deep scrape of ${validModels.length} models`);
+        console.log(`[SCRAPE-API] Starting deep scrape of ${validModels.length} models with DB persistence`);
 
-        // Start the deep scraping (don't wait for it to complete)
-        const scrapingPromise = deepScrapeModels(validModels);
+        // Execute scraping and await results
+        // Note: This is still async but we return the full stats
+        try {
+            const stats = await deepScrapeModels(validModels);
 
-        // Return immediately with a tracking ID
-        const trackingId = `scrape_${Date.now()}`;
-        
-        res.json({
-            trackingId,
-            message: 'Deep scraping started',
-            modelsRequested: validModels.length,
-            status: 'in-progress',
-            warning: 'This is a long-running operation. Results will be available shortly.'
-        });
-
-        // Process scraping in background
-        scrapingPromise
-            .then(results => {
-                console.log(`[SCRAPE-API] ✅ Scraping completed: ${trackingId}`);
-                // Here you could save results to database or file
-                // For now, logging completion
-            })
-            .catch(error => {
-                console.error(`[SCRAPE-API] ❌ Scraping error: ${error.message}`);
+            res.json({
+                status: 'completed',
+                message: 'Deep scraping completed and data saved to database',
+                statistics: stats,
+                timestamp: new Date().toISOString()
             });
+
+        } catch (scrapingError) {
+            console.error(`[SCRAPE-API] Scraping error: ${scrapingError.message}`);
+            res.status(500).json({
+                status: 'error',
+                error: 'Scraping failed',
+                message: scrapingError.message
+            });
+        }
 
     } catch (error) {
         console.error('[SCRAPE-API] Models endpoint error:', error.message);
@@ -72,18 +68,20 @@ router.post('/models', authMiddleware, async (req, res) => {
 
 /**
  * POST /api/scrape/category-stack
- * Scrape a single category URL down to parts
+ * Scrape a single category URL down to parts and auto-save to database
  * 
  * Request body:
  * {
- *   "categoryUrl": "https://opel.7zap.com/en/global/astra-engine/"
+ *   "categoryUrl": "https://opel.7zap.com/en/global/astra-engine/",
+ *   "modelName": "Astra",       // optional - for database context
+ *   "categoryName": "Engine"    // optional - for database context
  * }
  * 
- * Returns: Sub-categories and parts from that URL
+ * Returns: Sub-categories and parts from that URL, plus statistics
  */
 router.post('/category-stack', authMiddleware, async (req, res) => {
     try {
-        const { categoryUrl } = req.body;
+        const { categoryUrl, modelName = 'Unknown', categoryName = 'Unknown' } = req.body;
 
         if (!categoryUrl || typeof categoryUrl !== 'string') {
             return res.status(400).json({ error: 'categoryUrl is required and must be a string' });
@@ -107,11 +105,17 @@ router.post('/category-stack', authMiddleware, async (req, res) => {
         }, 120000); // 2 minute timeout
 
         try {
-            const result = await scrapeCategoryStack(categoryUrl);
+            const result = await scrapeCategoryStack(categoryUrl, modelName, categoryName);
             clearTimeout(timeout);
 
             res.json({
                 status: 'success',
+                message: 'Category scraping completed and data saved to database',
+                statistics: {
+                    savedCount: result.savedCount,
+                    failedCount: result.failedCount,
+                    errors: result.errors
+                },
                 data: result,
                 timestamp: new Date().toISOString()
             });

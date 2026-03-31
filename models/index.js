@@ -7,5 +7,6 @@ module.exports = {
     VehicleCatalog: require('./VehicleCatalog'),
     VehiclePart: require('./VehiclePart'),
     VehicleSpec: require('./VehicleSpec'),
-    SearchHistory: require('./SearchHistory')
+    SearchHistory: require('./SearchHistory'),
+    ScrapedPart: require('./ScrapedPart')
 };

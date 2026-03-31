@@ -11,6 +11,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const config = require('../config');
+const { ScrapedPart } = require('../models');
 
 // Configure axios with common headers and timeouts
 const axiosInstance = axios.create({
@@ -214,11 +215,21 @@ function extractParts(html, pageUrl) {
 
 /**
  * Deep recursive scraper: Model → Categories → Sub-Categories → Parts
+ * Auto-saves all scraped parts to MongoDB ScrapedPart collection
  * @param {Array} models - Array of model objects {name, url}
- * @returns {Promise<Array>} Array of scraped data with hierarchy
+ * @returns {Promise<Object>} Scraping statistics {totalModels, totalCategories, totalParts, savedParts, errors}
  */
 async function deepScrapeModels(models) {
     const results = [];
+    const stats = {
+        totalModels: 0,
+        totalCategories: 0,
+        totalParts: 0,
+        savedParts: 0,
+        failedParts: 0,
+        duplicateParts: 0,
+        errors: []
+    };
 
     for (const model of models) {
         console.log(`\n[DEEP-SCRAPER] ═══════════════════════════════════`);
@@ -236,6 +247,8 @@ async function deepScrapeModels(models) {
                 categories: []
             };
 
+            stats.totalModels++;
+
             // Step 2: Process each category
             for (const category of categories.slice(0, 5)) { // Limit to 5 categories
                 console.log(`\n[DEEP-SCRAPER] → Category: ${category.name}`);
@@ -250,6 +263,8 @@ async function deepScrapeModels(models) {
                         subCategories: []
                     };
 
+                    stats.totalCategories++;
+
                     // Step 3: Process each sub-category
                     for (const subCategory of subCategories.slice(0, 3)) { // Limit to 3 sub-categories
                         console.log(`[DEEP-SCRAPER]   → Sub-Category: ${subCategory.name}`);
@@ -258,15 +273,56 @@ async function deepScrapeModels(models) {
                             const subCategoryHTML = await fetchHTML(subCategory.url);
                             const parts = extractParts(subCategoryHTML, subCategory.url);
 
+                            stats.totalParts += parts.length;
+
+                            // Build documents for database insertion with full hierarchy
+                            const partDocuments = parts.map(part => ({
+                                modelName: model.name,
+                                categoryName: category.name,
+                                subCategoryName: subCategory.name,
+                                partName: part.name,
+                                oemNumber: part.oemNumber,
+                                description: part.description,
+                                imageUrl: part.imageUrl,
+                                modelUrl: model.url,
+                                categoryUrl: category.url,
+                                subCategoryUrl: subCategory.url,
+                                scrapedAt: new Date()
+                            }));
+
+                            // Save to database using bulkWrite for upsert (handles duplicates)
+                            if (partDocuments.length > 0) {
+                                try {
+                                    const bulkOps = partDocuments.map(doc => ({
+                                        updateOne: {
+                                            filter: { oemNumber: doc.oemNumber, modelName: doc.modelName },
+                                            update: { $set: doc },
+                                            upsert: true
+                                        }
+                                    }));
+
+                                    const bulkWriteResult = await ScrapedPart.bulkWrite(bulkOps);
+                                    stats.savedParts += bulkWriteResult.upsertedCount + bulkWriteResult.modifiedCount;
+                                    stats.duplicateParts += bulkWriteResult.matchedCount - bulkWriteResult.modifiedCount;
+
+                                    console.log(`[DEEP-SCRAPER] ✅ Saved ${bulkWriteResult.upsertedCount + bulkWriteResult.modifiedCount} parts to DB`);
+                                } catch (dbError) {
+                                    stats.failedParts += partDocuments.length;
+                                    stats.errors.push(`Failed to save parts for ${category.name}/${subCategory.name}: ${dbError.message}`);
+                                    console.error(`[DEEP-SCRAPER] ❌ DB Error: ${dbError.message}`);
+                                }
+                            }
+
                             categoryData.subCategories.push({
                                 subCategory: subCategory.name,
                                 url: subCategory.url,
                                 partCount: parts.length,
-                                parts: parts.slice(0, 10) // Limit to 10 parts per sub-category
+                                parts: parts.slice(0, 10) // Limit to 10 parts per sub-category for response
                             });
 
                         } catch (error) {
                             console.warn(`[DEEP-SCRAPER] ⚠️ Error processing sub-category: ${error.message}`);
+                            stats.errors.push(`Sub-category error: ${error.message}`);
                         }
                     }
 
@@ -274,6 +330,7 @@ async function deepScrapeModels(models) {
 
                 } catch (error) {
                     console.warn(`[DEEP-SCRAPER] ⚠️ Error processing category: ${error.message}`);
+                    stats.errors.push(`Category error: ${error.message}`);
                 }
 
                 // Rate limiting: wait between requests
@@ -284,6 +341,7 @@ async function deepScrapeModels(models) {
 
         } catch (error) {
             console.error(`[DEEP-SCRAPER] ❌ Error processing model ${model.name}: ${error.message}`);
+            stats.errors.push(`Model error on ${model.name}: ${error.message}`);
             results.push({
                 model: model.name,
                 url: model.url,
@@ -294,32 +352,76 @@ async function deepScrapeModels(models) {
     }
 
     console.log(`\n[DEEP-SCRAPER] ═══════════════════════════════════`);
-    console.log(`[DEEP-SCRAPER] Scraping complete. Processed ${results.length} models`);
-    return results;
+    console.log(`[DEEP-SCRAPER] Scraping Complete`);
+    console.log(`[DEEP-SCRAPER] Statistics:`, stats);
+
+    return stats;
 }
 
 /**
  * Scrape a single URL stack (Category → Sub-Category → Parts)
  * Useful for targeted scraping of specific paths
+ * Auto-saves all parts to MongoDB ScrapedPart collection
  * @param {string} categoryUrl - Starting category URL
- * @returns {Promise<Object>} Scraped data
+ * @param {string} modelName - Model name for context (optional)
+ * @param {string} categoryName - Category name for context (optional)
+ * @returns {Promise<Object>} Result with saved count {subCategories: [], savedCount, errors}
  */
-async function scrapeCategoryStack(categoryUrl) {
+async function scrapeCategoryStack(categoryUrl, modelName = 'Unknown', categoryName = 'Unknown') {
     console.log(`[DEEP-SCRAPER] Starting category stack scrape: ${categoryUrl}`);
+
+    const result = {
+        url: categoryUrl,
+        subCategories: [],
+        savedCount: 0,
+        failedCount: 0,
+        errors: []
+    };
 
     try {
         const categoryHTML = await fetchHTML(categoryUrl);
         const subCategories = extractSubCategories(categoryHTML, categoryUrl);
 
-        const result = {
-            url: categoryUrl,
-            subCategories: []
-        };
-
         for (const subCategory of subCategories.slice(0, 10)) {
             try {
                 const subCategoryHTML = await fetchHTML(subCategory.url);
                 const parts = extractParts(subCategoryHTML, subCategory.url);
+
+                // Build documents for database insertion with full hierarchy
+                const partDocuments = parts.map(part => ({
+                    modelName: modelName,
+                    categoryName: categoryName,
+                    subCategoryName: subCategory.name,
+                    partName: part.name,
+                    oemNumber: part.oemNumber,
+                    description: part.description,
+                    imageUrl: part.imageUrl,
+                    categoryUrl: categoryUrl,
+                    subCategoryUrl: subCategory.url,
+                    scrapedAt: new Date()
+                }));
+
+                // Save to database using bulkWrite for upsert
+                if (partDocuments.length > 0) {
+                    try {
+                        const bulkOps = partDocuments.map(doc => ({
+                            updateOne: {
+                                filter: { oemNumber: doc.oemNumber, modelName: doc.modelName },
+                                update: { $set: doc },
+                                upsert: true
+                            }
+                        }));
+
+                        const bulkWriteResult = await ScrapedPart.bulkWrite(bulkOps);
+                        result.savedCount += bulkWriteResult.upsertedCount + bulkWriteResult.modifiedCount;
+
+                        console.log(`[DEEP-SCRAPER] ✅ Saved ${bulkWriteResult.upsertedCount + bulkWriteResult.modifiedCount} parts from ${subCategory.name}`);
+                    } catch (dbError) {
+                        result.failedCount += partDocuments.length;
+                        result.errors.push(`Failed to save parts for ${subCategory.name}: ${dbError.message}`);
+                        console.error(`[DEEP-SCRAPER] ❌ DB Error: ${dbError.message}`);
+                    }
+                }
 
                 result.subCategories.push({
                     subCategory: subCategory.name,
@@ -329,14 +431,16 @@ async function scrapeCategoryStack(categoryUrl) {
 
                 await new Promise(resolve => setTimeout(resolve, 300));
             } catch (error) {
+                result.errors.push(`Error in sub-category ${subCategory.name}: ${error.message}`);
                 console.warn(`[DEEP-SCRAPER] Error in sub-category: ${error.message}`);
             }
         }
 
         return result;
     } catch (error) {
+        result.errors.push(`Error scraping category stack: ${error.message}`);
         console.error(`[DEEP-SCRAPER] Error scraping category stack: ${error.message}`);
-        return { url: categoryUrl, error: error.message, subCategories: [] };
+        return result;
     }
 }
 
