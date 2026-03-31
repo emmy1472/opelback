@@ -1,4 +1,5 @@
 require('dotenv').config();
+// Force rebuild - v1.0.1 (Fixed curl platform detection on 2026-03-31 01:30)
 const express = require('express');
 const cors = require('cors');
 const scraper = require('./scraper');
