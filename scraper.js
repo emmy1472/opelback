@@ -11,34 +11,60 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 // Detect OS platform for curl command
 const CURL_CMD = os.platform() === 'win32' ? 'curl.exe' : 'curl';
 
-async function fetchWithCurl(url, method = 'GET', postData = null) {
+async function fetchWithCurl(url, method = 'GET', postData = null, retryCount = 0) {
     try {
         let command;
+        const headers = [
+            `"User-Agent: ${USER_AGENT}"`,
+            '"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"',
+            '"Accept-Language: en-US,en;q=0.9"',
+            '"Accept-Encoding: gzip, deflate"',
+            '"DNT: 1"',
+            '"Connection: keep-alive"',
+            '"Upgrade-Insecure-Requests: 1"'
+        ];
+        
+        const headerStr = headers.map(h => `-H ${h}`).join(' ');
+        
         if (method === 'POST' && postData) {
             const dataStr = Object.entries(postData)
                 .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
                 .join('&');
-            command = `${CURL_CMD} -A "${USER_AGENT}" -L -X POST -d "${dataStr}" "${url}" --max-time 30`;
+            command = `${CURL_CMD} ${headerStr} -L -X POST -d "${dataStr}" "${url}" --max-time 60 --connect-timeout 15`;
         } else {
-            command = `${CURL_CMD} -A "${USER_AGENT}" -L "${url}" --max-time 30`;
+            // Add cookie jar and longer timeout for production environments
+            const cookieFile = os.tmpdir() + '/cookies.txt';
+            command = `${CURL_CMD} ${headerStr} -L -b "${cookieFile}" -c "${cookieFile}" "${url}" --max-time 60 --connect-timeout 15`;
         }
+        
+        console.log(`[SCRAPER] Fetching: ${url.substring(0, 80)}...`);
+        
         const stdout = execSync(command, {
             encoding: 'utf-8',
             maxBuffer: 1024 * 1024 * 10,
-            timeout: 30000
+            timeout: 65000
         });
+        
+        console.log(`[SCRAPER] ✅ Successfully fetched ${url.substring(0, 50)}... (${stdout.length} bytes)`);
         return stdout;
     } catch (error) {
         const msg = error.message || '';
-        if (msg.includes('Could not resolve host') || msg.includes('timed out') || msg.includes('Connection refused')) {
-            const networkErr = new Error(`Network error: Cannot reach ${url}. The server may be unreachable from this network.`);
+        console.error(`[SCRAPER] ❌ Error fetching ${url}:`, msg.substring(0, 200));
+        
+        // Retry logic for network errors
+        if (retryCount < 2 && (msg.includes('timed out') || msg.includes('ETIMEDOUT'))) {
+            console.log(`[SCRAPER] Retrying... (attempt ${retryCount + 1}/2)`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            return fetchWithCurl(url, method, postData, retryCount + 1);
+        }
+        
+        if (msg.includes('Could not resolve host') || msg.includes('Connection refused')) {
+            const networkErr = new Error(`Network error: Cannot reach ${url}. The server may be unreachable.`);
             networkErr.isNetworkError = true;
             throw networkErr;
         }
-        console.error('Curl error for URL:', url, error.message);
         throw error;
     }
-}
 
 
 async function getGlobalModels() {

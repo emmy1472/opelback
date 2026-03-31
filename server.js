@@ -234,19 +234,36 @@ app.get('/api/catalog', async (req, res) => {
         return res.status(400).json({ error: 'URL parameter is required' });
     }
     try {
+        console.log(`[API] /catalog request for: ${url.substring(0, 80)}`);
+        
         let categories = await VehicleCatalog.find({ parentUrl: url }, '-_id name url').lean();
+        
         if (categories.length === 0) {
-            console.log('No catalog in cache, scraping...');
+            console.log('[API] No catalog in cache, scraping from 7zap.com...');
             categories = await scraper.getModelCatalog(url);
+            console.log(`[API] Scraper returned ${categories.length} categories`);
+            
             if (categories.length > 0) {
                 const toSave = categories.map(c => ({ ...c, parentUrl: url }));
                 await VehicleCatalog.insertMany(toSave, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+                console.log(`[API] ✅ Cached ${categories.length} categories`);
+            } else {
+                console.warn('[API] ⚠️ Scraper returned empty results');
             }
+        } else {
+            console.log(`[API] ✅ Found ${categories.length} categories in cache`);
         }
+        
         res.json(categories);
     } catch (error) {
-        console.error('API /catalog error:', error.message);
-        res.status(500).json({ error: 'Failed to fetch catalog' });
+        console.error('[API] ❌ /catalog error:', error.message);
+        console.error('[API] Full error:', error);
+        
+        res.status(500).json({ 
+            error: 'Failed to fetch catalog',
+            details: error.message,
+            debug: process.env.NODE_ENV === 'production' ? undefined : error.stack
+        });
     }
 });
 
