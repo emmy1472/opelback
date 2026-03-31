@@ -167,7 +167,15 @@ async function getModelCatalog(modelUrl) {
             ];
         }
         
-        throw error;
+        // For any other error, log and return default categories (graceful degradation)
+        console.warn('[SCRAPER] Unexpected error in getModelCatalog, returning defaults:', error.message);
+        const modelPath = modelUrl.match(/global\/([^\/]+)/)?.[1] || 'astra-k';
+        return [
+            { name: 'Engine', url: `${BASE_URL}/en/global/${modelPath}-engine/` },
+            { name: 'Transmission', url: `${BASE_URL}/en/global/${modelPath}-transmission/` },
+            { name: 'Suspension', url: `${BASE_URL}/en/global/${modelPath}-suspension/` },
+            { name: 'Brakes', url: `${BASE_URL}/en/global/${modelPath}-brakes/` }
+        ];
     }
 }
 
@@ -215,7 +223,8 @@ async function getCategoryParts(categoryUrl) {
         return parts.filter((p, i, arr) => arr.findIndex(x => x.number === p.number) === i); // Remove duplicates
     } catch (error) {
         console.error('Error scraping category parts:', error.message);
-        throw error;
+        // Gracefully degrade: return empty array instead of throwing
+        return [];
     }
 }
 
@@ -280,7 +289,8 @@ async function getVehicleSpecs(modelUrl) {
         return specs;
     } catch (error) {
         console.error('Error scraping vehicle specs:', error.message);
-        throw error;
+        // Gracefully degrade: return empty array instead of throwing
+        return [];
     }
 }
 

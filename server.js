@@ -211,15 +211,20 @@ app.get('/api/models', async (req, res) => {
         let models = await VehicleModel.find({}, '-_id name url image').lean();
         if (models.length === 0) {
             console.log('No models in cache, scraping...');
-            models = await scraper.getGlobalModels();
-            if (models.length > 0) {
-                await VehicleModel.insertMany(models, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+            try {
+                models = await scraper.getGlobalModels();
+                if (models.length > 0) {
+                    await VehicleModel.insertMany(models, { ordered: false }).catch(e => console.error('Duplicate insertion ignored'));
+                }
+            } catch (scrapeError) {
+                console.warn('Scraping models failed:', scrapeError.message);
+                models = [];
             }
         }
         res.json(models);
     } catch (error) {
         console.error('API /models error:', error.message);
-        res.status(500).json({ error: 'Failed to fetch models' });
+        res.json([]);
     }
 });
 
