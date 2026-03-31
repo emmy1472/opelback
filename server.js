@@ -1,5 +1,5 @@
 require('dotenv').config();
-// Force rebuild - v1.0.1 (Fixed curl platform detection on 2026-03-31 01:30)
+// Force rebuild - v1.0.2 (Made all scrapers resilient with fallback empty arrays - 2026-03-31 01:45)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
