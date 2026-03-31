@@ -2,10 +2,14 @@ const { execSync } = require('child_process');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 
 const BASE_URL = 'https://opel.7zap.com';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
+
+// Detect OS platform for curl command
+const CURL_CMD = os.platform() === 'win32' ? 'curl.exe' : 'curl';
 
 async function fetchWithCurl(url, method = 'GET', postData = null) {
     try {
@@ -14,9 +18,9 @@ async function fetchWithCurl(url, method = 'GET', postData = null) {
             const dataStr = Object.entries(postData)
                 .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
                 .join('&');
-            command = `curl.exe -A "${USER_AGENT}" -L -X POST -d "${dataStr}" "${url}" --max-time 30`;
+            command = `${CURL_CMD} -A "${USER_AGENT}" -L -X POST -d "${dataStr}" "${url}" --max-time 30`;
         } else {
-            command = `curl.exe -A "${USER_AGENT}" -L "${url}" --max-time 30`;
+            command = `${CURL_CMD} -A "${USER_AGENT}" -L "${url}" --max-time 30`;
         }
         const stdout = execSync(command, {
             encoding: 'utf-8',
