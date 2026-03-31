@@ -459,4 +459,3 @@ module.exports = {
     getCategoryParts,
     searchByVin
 };
-
