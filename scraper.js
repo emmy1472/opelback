@@ -8,33 +8,21 @@ const os = require('os');
 const BASE_URL = 'https://opel.7zap.com';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
 
-// Detect OS platform for curl command
-const CURL_CMD = os.platform() === 'win32' ? 'curl.exe' : 'curl';
+// Force curl command based on platform - use process.platform directly
+const CURL = process.platform === 'win32' ? 'curl.exe' : 'curl';
 
 async function fetchWithCurl(url, method = 'GET', postData = null, retryCount = 0) {
     try {
+        console.log(`[SCRAPER] Platform: ${process.platform}, CMD: ${CURL}`);
         let command;
-        const headers = [
-            `"User-Agent: ${USER_AGENT}"`,
-            '"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"',
-            '"Accept-Language: en-US,en;q=0.9"',
-            '"Accept-Encoding: gzip, deflate"',
-            '"DNT: 1"',
-            '"Connection: keep-alive"',
-            '"Upgrade-Insecure-Requests: 1"'
-        ];
-        
-        const headerStr = headers.map(h => `-H ${h}`).join(' ');
         
         if (method === 'POST' && postData) {
             const dataStr = Object.entries(postData)
                 .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
                 .join('&');
-            command = `${CURL_CMD} ${headerStr} -L -X POST -d "${dataStr}" "${url}" --max-time 60 --connect-timeout 15`;
+            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html" -L -X POST -d "${dataStr}" "${url}" --max-time 60 --connect-timeout 15 --retry 2`;
         } else {
-            // Add cookie jar and longer timeout for production environments
-            const cookieFile = os.tmpdir() + '/cookies.txt';
-            command = `${CURL_CMD} ${headerStr} -L -b "${cookieFile}" -c "${cookieFile}" "${url}" --max-time 60 --connect-timeout 15`;
+            command = `${CURL} -A "${USER_AGENT}" -H "Accept: text/html,application/xhtml+xml" -H "Accept-Language: en-US,en;q=0.9" -L "${url}" --max-time 60 --connect-timeout 15 --retry 2`;
         }
         
         console.log(`[SCRAPER] Fetching: ${url.substring(0, 80)}...`);
