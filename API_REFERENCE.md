@@ -254,4 +254,35 @@ curl "http://localhost:5000/api/catalog?url=https://opel.7zap.com/en/catalog/car
 
 ---
 
+## 🚀 VERCEL DEPLOYMENT FIX
+
+If you're getting a **500 error on /api/models** after deploying to Vercel:
+
+### 1️⃣ Allow All IPs in MongoDB Atlas
+- Go to https://cloud.mongodb.com/
+- Click **Network Access**
+- Click **ADD IP ADDRESS**
+- Enter: `0.0.0.0/0` (Allow from anywhere)
+- Click **Confirm**
+
+### 2️⃣ Set Environment Variables in Vercel
+- Go to Vercel Dashboard → Your Project
+- Click **Settings** → **Environment Variables**
+- Add:
+  - `MONGO_URI` = (your MongoDB connection string)
+  - `JWT_SECRET` = (your JWT secret)
+  - `NODE_ENV` = `production`
+- **Redeploy** your project
+
+### 3️⃣ Git Push Changes
+```bash
+git add vercel.json
+git commit -m "Add Vercel configuration"
+git push
+```
+
+See [VERCEL_FIXES.md](VERCEL_FIXES.md) for detailed troubleshooting.
+
+---
+
 **Backend is fully operational! 🚀**
