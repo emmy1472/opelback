@@ -162,10 +162,11 @@ app.get('/api/image-proxy', async (req, res) => {
     
     try {
         const { execSync } = require('child_process');
+        const CURL = process.platform === 'win32' ? 'curl.exe' : 'curl';
         const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
         
-        // Use curl with Cloudflare bypass headers and cookie jar
-        const command = `curl.exe -A "${USER_AGENT}" -L "${url}" --max-time 30 --compressed -H "Accept: image/*" -H "Referer: https://7zap.com/" -c nul -b ""`;
+        // Use curl with Cloudflare bypass headers and cookie jar (platform-aware)
+        const command = `${CURL} -A "${USER_AGENT}" -L "${url}" --max-time 30 --compressed -H "Accept: image/*" -H "Referer: https://7zap.com/" --cookie-jar /tmp/cookies.txt --cookie "" --retry 2`;
         const imageBuffer = execSync(command, {
             encoding: 'buffer',
             maxBuffer: 1024 * 1024 * 50,
@@ -191,13 +192,15 @@ app.get('/api/image-proxy', async (req, res) => {
     } catch (error) {
         console.error(`[IMAGE PROXY ERROR] ${error.message}`);
         // Return JSON error response instead of fallback pixel
-        // This is more useful for debugging Cloudflare issues
         res.status(502).json({ 
             error: 'Failed to fetch image',
             message: error.message,
             reason: 'Image server may be behind Cloudflare or temporarily unavailable',
             url: url,
             note: '7zap.com uses Cloudflare WAF which blocks automated requests. Images can be accessed through browser-based requests with Cloudflare cookie challenges.'
+        });
+    }
+});
         });
     }
 });
@@ -390,13 +393,20 @@ app.post('/api/vin-lookup', optionalAuth, async (req, res) => {
         res.json(result);
     } catch (error) {
         const msg = error.message || '';
+        console.error('VIN lookup error:', msg);
+        
         if (msg.includes('Network error') || msg.includes('Could not resolve host')) {
             return res.json({
                 found: false,
                 message: 'Cannot connect to the parts database. Please check your internet connection and try again.'
             });
         }
-        res.status(500).json({ error: 'VIN lookup failed' });
+        
+        // For any other error, return graceful response instead of 500
+        res.json({
+            found: false,
+            message: 'VIN lookup temporarily unavailable. Try again later.'
+        });
     }
 });
 
