@@ -10,6 +10,7 @@ const authRoutes = require('./routes/auth');
 const catalogRoutes = require('./routes/catalog');
 const scraperRoutes = require('./routes/scraper');
 const vinDecoderRoutes = require('./routes/vin-decoder');
+const vehicleDecodeRoutes = require('./routes/vehicle-decode');
 const importRoutes = require('./routes/import');
 
 const app = express();
@@ -39,6 +40,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api', catalogRoutes);
 app.use('/api/scrape', scraperRoutes);
 app.use('/api/vin', vinDecoderRoutes);
+app.use('/api/v2/vehicle', vehicleDecodeRoutes);
 app.use('/api/parts', importRoutes);
 
 // Error handling middleware
