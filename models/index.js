@@ -8,5 +8,6 @@ module.exports = {
     VehiclePart: require('./VehiclePart'),
     VehicleSpec: require('./VehicleSpec'),
     SearchHistory: require('./SearchHistory'),
-    ScrapedPart: require('./ScrapedPart')
+    ScrapedPart: require('./ScrapedPart'),
+    VINLookup: require('./VINLookup')
 };
